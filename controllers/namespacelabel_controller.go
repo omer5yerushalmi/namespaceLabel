@@ -29,6 +29,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	omerv1 "omer.io/namespacelabel/api/v1"
+
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 // NamespaceLabelReconciler reconciles a NamespaceLabel object
@@ -220,6 +224,28 @@ func (r *NamespaceLabelReconciler) synchronizedNamespaceLabelToNamespaceFix(ctx 
 	return nil
 }
 
+func (r *NamespaceLabelReconciler) listAllNamespaceLabel(namespace client.Object) []reconcile.Request {
+	namespaceLabelList := &omerv1.NamespaceLabelList{}
+	listOps := &client.ListOptions{
+		Namespace: namespace.GetNamespace(),
+	}
+	err := r.List(context.TODO(), namespaceLabelList, listOps)
+	if err != nil {
+		return []reconcile.Request{}
+	}
+
+	requests := make([]reconcile.Request, len(namespaceLabelList.Items))
+	for i, item := range namespaceLabelList.Items {
+		requests[i] = reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      item.GetName(),
+				Namespace: item.GetNamespace(),
+			},
+		}
+	}
+	return requests
+}
+
 func (r *NamespaceLabelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	_ = log.FromContext(ctx)
 
@@ -256,8 +282,9 @@ func (r *NamespaceLabelReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *NamespaceLabelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&omerv1.NamespaceLabel{}).
-		//Watches(
-		//	&source.Kind{Type: &corev1.Namespace{}},
-		//  handler.EnqueueRequestsFromMapFunc(r.)).
+		Watches(
+			&source.Kind{Type: &v1.Namespace{}},
+			handler.EnqueueRequestsFromMapFunc(r.listAllNamespaceLabel),
+		).
 		Complete(r)
 }

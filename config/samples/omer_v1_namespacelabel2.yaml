@@ -1,0 +1,12 @@
+apiVersion: omer.omer.io/v1
+kind: NamespaceLabel
+metadata:
+    name: b
+    namespace: omer
+spec:
+    labels:
+        c: c
+        e: hara
+
+        
+        

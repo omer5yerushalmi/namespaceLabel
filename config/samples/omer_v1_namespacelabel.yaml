@@ -1,0 +1,11 @@
+apiVersion: omer.omer.io/v1
+kind: NamespaceLabel
+metadata:
+    name: a
+    namespace: omer
+spec:
+    labels:
+        b: b
+        a: sasd
+        c: c
+        

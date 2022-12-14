@@ -5,5 +5,6 @@ metadata:
     namespace: omer
 spec:
     labels:
-        m: m
+        b: b
         a: ssadasd
+        a: a

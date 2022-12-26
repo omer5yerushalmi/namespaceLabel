@@ -140,9 +140,13 @@ var _ = Describe("NamespaceLabel controller", func() {
 			k8sClient.Update(ctx, &nslabel1)
 			Eventually(func() bool {
 				k8sClient.Get(ctx, namespacedName, &nslabel1)
-				return reflect.DeepEqual(map[string]string{
-					"b": "b",
-				}, nslabel1.Spec.Labels)
+				return (reflect.DeepEqual(map[string]string{
+					"b":                           "b",
+					"kubernetes.io/metadata.name": "haragadol",
+				}, nslabel1.Spec.Labels)) &&
+					(reflect.DeepEqual(map[string]string{
+						"kubernetes.io/metadata.name": "haragadol",
+					}, nslabel1.Status.UnSyncLabels))
 			}, timeout, interval).Should(BeTrue())
 		})
 	})

@@ -17,6 +17,8 @@ limitations under the License.
 package controllers
 
 import (
+	"os"
+
 	"context"
 	ctrl "sigs.k8s.io/controller-runtime"
 
@@ -31,7 +33,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	//"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	"github.com/go-logr/zapr"
+	ecszap "go.elastic.co/ecszap"
+	"go.uber.org/zap"
 
 	omerv1 "omer.io/namespacelabel/api/v1"
 	//+kubebuilder:scaffold:imports
@@ -53,7 +59,7 @@ func TestAPIs(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+	//logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
@@ -83,6 +89,11 @@ var _ = BeforeSuite(func() {
 		Scheme: scheme.Scheme,
 	})
 	Expect(err).ToNot(HaveOccurred())
+
+	encoderConfig := ecszap.NewDefaultEncoderConfig()
+	core := ecszap.NewCore(encoderConfig, os.Stdout, zap.DebugLevel)
+	logger := zap.New(core, zap.AddCaller())
+	logf.SetLogger(zapr.NewLogger(logger))
 
 	err = (&NamespaceLabelReconciler{
 		Client: k8sManager.GetClient(),

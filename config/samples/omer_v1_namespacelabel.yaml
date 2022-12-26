@@ -5,6 +5,7 @@ metadata:
     namespace: omer
 spec:
     labels:
-        b: b
-        a: ssadasd
-        a: a
+        a: b
+        kubernetes.io/metadata.name: sahar
+        openshift.io: hara
+        d: d

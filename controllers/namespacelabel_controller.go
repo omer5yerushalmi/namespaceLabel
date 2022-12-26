@@ -24,7 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -33,12 +33,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+
+	"github.com/go-logr/logr"
+
+	"golang.org/x/exp/slices"
 )
 
 // NamespaceLabelReconciler reconciles a NamespaceLabel object
 type NamespaceLabelReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Logger          logr.Logger
+	Scheme          *runtime.Scheme
+	ProtectedLabels []string
 }
 
 //+kubebuilder:rbac:groups=omer.omer.io,resources=namespacelabels,verbs=get;list;watch;create;update;patch;delete
@@ -67,35 +73,24 @@ func isLabelKeyExistInLabels(labels map[string]string, key string) bool {
 	return isExist
 }
 
-func (r *NamespaceLabelReconciler) updateSyncNamespaceLabel(ctx context.Context, key string, value string, namespaceLabel *omerv1.NamespaceLabel) error {
-	//if there is no labels in the namespaceLabel status - create!
-	if (*namespaceLabel).Status.SyncLabels == nil {
-		fmt.Println("there is no labels in the namespaceLabel status")
-		(*namespaceLabel).Status.SyncLabels = make(map[string]string)
+// the function return all the keys that exist in map1 and not in map2
+func getDiffBetweenMaps(map1 map[string]string, map2 map[string]string) map[string]string {
+	diffMap := make(map[string]string)
+	for key, value := range map1 {
+		if !isLabelKeyExistInLabels(map2, key) {
+			diffMap[key] = value
+		}
 	}
-	//update the nslabel sync status
-	(*namespaceLabel).Status.SyncLabels[key] = value
 
-	return nil
+	return diffMap
 }
 
-func (r *NamespaceLabelReconciler) updateNamespaceLabels(ctx context.Context, key string, value string, namespace *v1.Namespace) error {
-	//if there is no labels in the namespace - create!
-	if (*namespace).Labels == nil {
-		(*namespace).Labels = make(map[string]string)
-	}
-	//update the label
-	(*namespace).Labels[key] = value
-
-	return nil
-}
-
-func (r *NamespaceLabelReconciler) cleanupNamespaceLabelFix(ctx context.Context, namespaceLabel omerv1.NamespaceLabel, nsLabelFinalizer string) error {
+func (r *NamespaceLabelReconciler) cleanupNamespaceLabel(ctx context.Context, namespaceLabel omerv1.NamespaceLabel, nsLabelFinalizer string) error {
 	//get the namespace for sync to nslabel
 	var namespace v1.Namespace
 	namespacedName := types.NamespacedName{Name: namespaceLabel.Namespace}
 	if err := r.Get(ctx, namespacedName, &namespace); err != nil {
-		fmt.Println("unable to fetch namespace")
+		r.Logger.Error(err, "unable to fetch namespace", namespaceLabel.Namespace)
 		return client.IgnoreNotFound(err)
 	}
 
@@ -111,7 +106,7 @@ func (r *NamespaceLabelReconciler) cleanupNamespaceLabelFix(ctx context.Context,
 	//update the ns
 	if isChangeNeededInNamespace {
 		if err := r.Update(ctx, &namespace); err != nil {
-			fmt.Println(err, "unable to update namespace")
+			r.Logger.Error(err, "unable to update namespace", namespace.Name)
 			return err
 		}
 	}
@@ -124,101 +119,80 @@ func (r *NamespaceLabelReconciler) cleanupNamespaceLabelFix(ctx context.Context,
 	return nil
 }
 
-func (r *NamespaceLabelReconciler) synchronizedNamespaceLabelToNamespaceFix(ctx context.Context, namespaceLabel omerv1.NamespaceLabel) error {
+// the main function for handling the sync between the cr and the namespace
+func (r *NamespaceLabelReconciler) handleSyncNamespaceLabel(ctx context.Context, namespaceLabel omerv1.NamespaceLabel) error {
 	//get the namespace for sync to nslabel
 	var namespace v1.Namespace
-	namespacedName := types.NamespacedName{Name: namespaceLabel.Namespace}
-	if err := r.Get(ctx, namespacedName, &namespace); err != nil {
-		fmt.Println("unable to fetch namespace")
+	if err := r.Get(ctx, types.NamespacedName{Name: namespaceLabel.Namespace}, &namespace); err != nil {
+		r.Logger.Error(err, "unable to fetch namespace", namespace.ObjectMeta.Name)
 		return client.IgnoreNotFound(err)
 	}
 
-	//stage 1:the label is in sync and not in spec->the label deleted and should delete from the nslabel sync and ns
-	//first we will delete the label from the ns(stage 1.1), than check if it already deleted from the ns - we will delete from nslabel(stage 1.2)
-	isChangeNeededInNamespace := false
-	isChangeNeededInNslabelSync := false
-	for key, _ := range namespaceLabel.Status.SyncLabels {
-		if !(isLabelKeyExistInLabels(namespaceLabel.Spec.Labels, key)) {
-			if isLabelKeyExistInLabels(namespace.ObjectMeta.Labels, key) {
-				fmt.Println("HARA 1")
-				isChangeNeededInNamespace = true
-				delete(namespace.ObjectMeta.Labels, key)
-			} else if isLabelKeyExistInLabels(namespaceLabel.Status.SyncLabels, key) {
-				fmt.Println("HARA 2")
-				isChangeNeededInNslabelSync = true
-				delete(namespaceLabel.Status.SyncLabels, key)
-			}
-		}
+	postSyncLabels, postUnSyncLabels := r.sortSyncLabels(namespaceLabel, namespace)
+	fmt.Println(postSyncLabels, postUnSyncLabels)
+	if err := r.syncNamespaceToNamespaceLabel(ctx, namespaceLabel, namespace, postSyncLabels); err != nil {
+		r.Logger.Error(err, "unable to update namespacelabel in order to the namespacelabel", namespaceLabel.ObjectMeta.Name)
+		return err
 	}
-	if isChangeNeededInNamespace {
-		fmt.Println("stage 1.1:->")
-		if err := r.Update(ctx, &namespace); err != nil {
-			fmt.Println(err, "unable to update namespace")
-			return err
-		}
+
+	namespaceLabel.Status.SyncLabels = postSyncLabels
+	namespaceLabel.Status.UnSyncLabels = postUnSyncLabels
+	if err := r.Status().Update(ctx, &namespaceLabel); err != nil {
+		r.Logger.Error(err, "unable to update status of namespaceLabel", namespaceLabel.ObjectMeta.Name)
+		return err
 	}
-	if isChangeNeededInNslabelSync {
-		fmt.Println("stage 1.2:->")
-		if err := r.Status().Update(ctx, &namespaceLabel); err != nil {
-			fmt.Println(err, "unable to update status of namespaceLabel")
-			return err
-		}
-		return nil
-	}
+
+	return nil
+}
+
+func (r *NamespaceLabelReconciler) sortSyncLabels(namespaceLabel omerv1.NamespaceLabel, namespace v1.Namespace) (syncLabels map[string]string, unSyncLabels map[string]string) {
+	syncLabels = make(map[string]string)
+	unSyncLabels = make(map[string]string)
 
 	//stage 2:running on all the labels in the spec of the nslabel object
-	//stage 2.1: the label is in the namespace and not in the sync - result: delete from nslabel spec
+	//stage 2.1: the label is in the namespace and not in the sync - result: update the Unsync
 	//stage 2.2: the label is in the namespace and in the sync - result: update the sync
 	//stage 2.3: the label is in the not in the namespace and also not in the sync - result: update the sync
-	isChangeNeededInNsLabelSpec := false
-	isChangeNeededInNsLabelSync := false
+
 	for key, value := range namespaceLabel.Spec.Labels {
-		fmt.Println("key:", key, "value:", value)
-		if isLabelKeyExistInLabels(namespace.ObjectMeta.Labels, key) && !(isLabelKeyExistInLabels(namespaceLabel.Status.SyncLabels, key)) {
-			isChangeNeededInNsLabelSpec = true
-			delete(namespaceLabel.Spec.Labels, key)
-		} else if isLabelKeyExistInLabels(namespace.ObjectMeta.Labels, key) && isLabelKeyExistInLabels(namespaceLabel.Status.SyncLabels, key) && (value != namespaceLabel.Status.SyncLabels[key]) && (!isChangeNeededInNsLabelSpec) {
-			isChangeNeededInNsLabelSync = true
-			if err := r.updateSyncNamespaceLabel(ctx, key, value, &namespaceLabel); err != nil {
-				fmt.Println(err, "unable to update sync namespace label")
-				return err
+		if slices.Contains(r.ProtectedLabels, key) {
+			unSyncLabels[key] = value
+		} else {
+			if isLabelKeyExistInLabels(namespace.ObjectMeta.Labels, key) {
+				if isLabelKeyExistInLabels(namespaceLabel.Status.SyncLabels, key) {
+					syncLabels[key] = value
+				} else {
+					unSyncLabels[key] = value
+				}
+			} else {
+				syncLabels[key] = value
 			}
-		} else if (!isLabelKeyExistInLabels(namespace.ObjectMeta.Labels, key)) && (!isLabelKeyExistInLabels(namespaceLabel.Status.SyncLabels, key)) && (!isChangeNeededInNsLabelSpec) {
-			isChangeNeededInNsLabelSync = true
-			if err := r.updateSyncNamespaceLabel(ctx, key, value, &namespaceLabel); err != nil {
-				fmt.Println(err, "unable to update sync namespace label")
-				return err
-			}
+		}
+
+	}
+	return syncLabels, unSyncLabels
+}
+
+func (r *NamespaceLabelReconciler) syncNamespaceToNamespaceLabel(ctx context.Context, namespaceLabel omerv1.NamespaceLabel, namespace v1.Namespace, postSyncLabels map[string]string) error {
+	newNamespaceLabels := make(map[string]string)
+	deletedLabels := getDiffBetweenMaps(namespaceLabel.Status.SyncLabels, postSyncLabels)
+
+	for key, value := range namespace.ObjectMeta.Labels {
+		if isLabelKeyExistInLabels(deletedLabels, key) {
+			continue
+		} else {
+			newNamespaceLabels[key] = value
 		}
 	}
 
-	if isChangeNeededInNsLabelSpec {
-		fmt.Println("stage 2.1:->")
-		if err := r.Update(ctx, &namespaceLabel); err != nil {
-			fmt.Println(err, "unable to update namespaceLabel")
-			return err
-		}
-		return nil
-	} else if isChangeNeededInNsLabelSync {
-		fmt.Println("stage 2.2 or 2.3:->")
-		if err := r.Status().Update(ctx, &namespaceLabel); err != nil {
-			fmt.Println(err, "unable to update status of namespaceLabel")
-			return err
-		}
-		return nil
-	} else if !isChangeNeededInNamespace {
-		//last step: update the namespace label's in order to the sync labels
-		fmt.Println("Last step: ->")
-		for key, value := range namespaceLabel.Status.SyncLabels {
-			if err := r.updateNamespaceLabels(ctx, key, value, &namespace); err != nil {
-				fmt.Println(err, "unable to update namespace labels")
-				return err
-			}
-		}
-		if err := r.Update(ctx, &namespace); err != nil {
-			fmt.Println(err, "unable to update namespace")
-			return err
-		}
+	for key, value := range postSyncLabels {
+		newNamespaceLabels[key] = value
+	}
+
+	namespace.SetLabels(newNamespaceLabels)
+	if err := r.Update(ctx, &namespace); err != nil {
+		r.Logger.Error(err, "unable to update namespace labels", namespace.Name)
+		return err
 	}
 
 	return nil
@@ -247,22 +221,22 @@ func (r *NamespaceLabelReconciler) listAllNamespaceLabel(namespace client.Object
 }
 
 func (r *NamespaceLabelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	r.Logger = ctrllog.FromContext(ctx)
 
 	// TODO(user): your logic here
 
 	//get the nslabel
 	var namespaceLabel omerv1.NamespaceLabel
 	if err := r.Get(ctx, req.NamespacedName, &namespaceLabel); err != nil {
-		fmt.Println("unable to fetch ns-label")
+		r.Logger.Error(err, "unable to fetch ns-label", "namespace", namespaceLabel.ObjectMeta.Name)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
 	//check if  nslabel in deletion state
 	if isNsLabelInDeletionState(namespaceLabel) {
-		fmt.Println("the nslabel will deleted")
+		r.Logger.Info("NamespaceLabel in deletion state ")
 		//sent to clean all the labels from the namespace and then delete the nslabel finalizer
-		r.cleanupNamespaceLabelFix(ctx, namespaceLabel, nsLabelFinalizer)
+		r.cleanupNamespaceLabel(ctx, namespaceLabel, nsLabelFinalizer)
 	} else {
 		//first - add finalizer
 		if !controllerutil.ContainsFinalizer(&namespaceLabel, nsLabelFinalizer) {
@@ -272,7 +246,7 @@ func (r *NamespaceLabelReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			}
 		}
 		//todo - sync nslabel to namespace object
-		r.synchronizedNamespaceLabelToNamespaceFix(ctx, namespaceLabel)
+		r.handleSyncNamespaceLabel(ctx, namespaceLabel)
 	}
 
 	return ctrl.Result{}, nil

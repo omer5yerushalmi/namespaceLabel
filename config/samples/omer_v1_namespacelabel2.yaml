@@ -5,7 +5,7 @@ metadata:
     namespace: omer
 spec:
     labels:
-        d: d
+        d: ddsf
         b: c
         e: hara
 

@@ -29,7 +29,14 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	//"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/go-logr/zapr"
+	ecszap "go.elastic.co/ecszap"
+	"go.uber.org/zap"
+
+	"strings"
 
 	omerv1 "omer.io/namespacelabel/api/v1"
 	"omer.io/namespacelabel/controllers"
@@ -52,18 +59,21 @@ func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
+	var protectedLabels string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	opts := zap.Options{
-		Development: true,
-	}
-	opts.BindFlags(flag.CommandLine)
+	flag.StringVar(&protectedLabels, "protectedLabels", "kubernetes.io", "list of protected labels")
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	encoderConfig := ecszap.NewDefaultEncoderConfig()
+	core := ecszap.NewCore(encoderConfig, os.Stdout, zap.DebugLevel)
+	logger := zap.New(core, zap.AddCaller())
+	logf.SetLogger(zapr.NewLogger(logger))
+
+	//ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -89,9 +99,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	//parse the protected list
+	protectedMap := strings.Split(protectedLabels, ",")
+
 	if err = (&controllers.NamespaceLabelReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		ProtectedLabels: protectedMap,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NamespaceLabel")
 		os.Exit(1)

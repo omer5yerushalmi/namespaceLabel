@@ -35,7 +35,8 @@ type NamespaceLabelSpec struct {
 type NamespaceLabelStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
-	SyncLabels map[string]string `json:"syncLabels,omitempty"`
+	SyncLabels   map[string]string `json:"syncLabels,omitempty"`
+	UnSyncLabels map[string]string `json:"unSyncLabels,omitempty"`
 }
 
 //+kubebuilder:object:root=true

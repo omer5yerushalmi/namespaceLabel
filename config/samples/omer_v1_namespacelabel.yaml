@@ -1,7 +1,7 @@
 apiVersion: omer.omer.io/v1
 kind: NamespaceLabel
 metadata:
-    name: a
+    name: omer1
     namespace: omer
 spec:
     labels:

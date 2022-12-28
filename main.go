@@ -29,6 +29,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+
 	//"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -108,6 +109,10 @@ func main() {
 		ProtectedLabels: protectedMap,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "NamespaceLabel")
+		os.Exit(1)
+	}
+	if err = (&omerv1.NamespaceLabel{}).SetupWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "NamespaceLabel")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder

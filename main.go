@@ -29,6 +29,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+
 	//"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -38,8 +39,12 @@ import (
 
 	"strings"
 
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
 	omerv1 "omer.io/namespacelabel/api/v1"
 	"omer.io/namespacelabel/controllers"
+	"omer.io/namespacelabel/webhooks"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -110,6 +115,17 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "NamespaceLabel")
 		os.Exit(1)
 	}
+
+	//
+	setupLog.Info("setting up webhook server")
+	hookServer := mgr.GetWebhookServer()
+	decoder, _ := admission.NewDecoder(scheme)
+	setupLog.Info("Registering webhooks to the webhook server")
+	hookServer.Register("/validate-omer-omer-io-v1-namespacelabel", &webhook.Admission{Handler: &webhooks.NamespaceLabelWebhook{
+		Decoder: decoder,
+		Log:     setupLog,
+	}})
+	//
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
